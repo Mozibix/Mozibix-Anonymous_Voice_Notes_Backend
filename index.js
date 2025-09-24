@@ -2,8 +2,7 @@ const express = require("express");
 const multer = require("multer");
 const cors = require("cors");
 const { v2: cloudinary } = require("cloudinary");
-const fs = require("fs");
-const path = require("path");
+const streamifier = require("streamifier");
 
 // Load environment variables
 require("dotenv").config();
@@ -21,9 +20,6 @@ cloudinary.config({
 // Debug: Check if environment variables are loaded
 if (!process.env.CLOUDINARY_CLOUD_NAME) {
   console.warn("⚠️  CLOUDINARY_CLOUD_NAME not found in environment variables");
-  console.log(
-    "Make sure you have a .env file with your Cloudinary credentials"
-  );
 } else {
   console.log(
     "✅ Cloudinary configured for:",
@@ -32,25 +28,11 @@ if (!process.env.CLOUDINARY_CLOUD_NAME) {
 }
 
 // Middleware
-app.use(cors());
+app.use(cors({ origin: "*" })); // Allow all origins
 app.use(express.json());
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = "temp-uploads";
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir);
-    }
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const timestamp = Date.now();
-    const random = Math.random().toString(36).substring(7);
-    cb(null, `voice-${timestamp}-${random}.wav`);
-  },
-});
-
+// Configure multer for file uploads (memory storage for Vercel compatibility)
+const storage = multer.memoryStorage();
 const upload = multer({
   storage,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
@@ -63,7 +45,7 @@ const upload = multer({
   },
 });
 
-// In-memory storage for voice notes (in production, use a database)
+// In-memory storage for voice notes (replace with DB in production)
 let voiceNotes = [];
 let noteIdCounter = 1;
 
@@ -76,57 +58,55 @@ app.post("/api/upload-voice", upload.single("audio"), async (req, res) => {
 
     const { effect, userAgent } = req.body;
 
-    // Upload to Cloudinary
-    const result = await cloudinary.uploader.upload(req.file.path, {
-      resource_type: "video", // Use 'video' for audio files
-      public_id: `anonymous-voice-${Date.now()}`,
-      folder: "anonymous-voices",
-    });
+    // Upload stream to Cloudinary
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        resource_type: "video", // Supports audio files
+        public_id: `anonymous-voice-${Date.now()}`,
+        folder: "anonymous-voices",
+      },
+      (error, result) => {
+        if (error) {
+          console.error("Cloudinary upload error:", error);
+          return res.status(500).json({ error: "Upload failed" });
+        }
 
-    // Create voice note record
-    const voiceNote = {
-      id: noteIdCounter++,
-      cloudinaryUrl: result.secure_url,
-      publicId: result.public_id,
-      effect: effect || "unknown",
-      timestamp: new Date().toISOString(),
-      userAgent: userAgent ? userAgent.substring(0, 100) : "unknown", // Truncated for privacy
-      fileSize: req.file.size,
-      duration: null, // Could be extracted with audio analysis
-      downloaded: false,
-      downloadCount: 0,
-    };
+        // Create voice note record
+        const voiceNote = {
+          id: noteIdCounter++,
+          cloudinaryUrl: result.secure_url,
+          publicId: result.public_id,
+          effect: effect || "unknown",
+          timestamp: new Date().toISOString(),
+          userAgent: userAgent ? userAgent.substring(0, 100) : "unknown",
+          fileSize: req.file.size,
+          duration: null,
+          downloaded: false,
+          downloadCount: 0,
+        };
 
-    voiceNotes.push(voiceNote);
+        voiceNotes.push(voiceNote);
 
-    // Clean up temp file
-    fs.unlinkSync(req.file.path);
+        res.json({
+          success: true,
+          message: "Voice note uploaded successfully",
+          id: voiceNote.id,
+          url: result.secure_url,
+        });
+      }
+    );
 
-    res.json({
-      success: true,
-      message: "Voice note uploaded successfully",
-      id: voiceNote.id,
-      url: result.secure_url,
-    });
+    // Pipe the buffer into Cloudinary
+    streamifier.createReadStream(req.file.buffer).pipe(stream);
   } catch (error) {
     console.error("Upload error:", error);
-
-    // Clean up temp file if it exists
-    if (req.file && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-    }
-
-    res.status(500).json({
-      error: "Upload failed",
-      details: error.message,
-    });
+    res.status(500).json({ error: "Upload failed", details: error.message });
   }
 });
 
 // Get all voice notes (admin dashboard)
 app.get("/api/admin/voice-notes", (req, res) => {
   try {
-    // Sort by newest first
     const sortedNotes = voiceNotes.sort(
       (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
     );
