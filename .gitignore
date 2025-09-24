@@ -1,0 +1,8 @@
+# Dependency directory
+/node_modules
+
+# Temp file directory
+/temp-uploads
+
+# Environment variables
+.env
