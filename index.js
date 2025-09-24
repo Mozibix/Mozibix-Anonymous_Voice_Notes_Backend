@@ -189,6 +189,15 @@ app.delete("/api/admin/voice-notes/:id", async (req, res) => {
   }
 });
 
+// Root route
+app.get("/", (req, res) => {
+  res.send(`
+    <h2>🔊 Annpy Voice System Backend is active</h2>
+    <p>Created by Dark9T</p>
+    <p><a href="https://github.com/Mozibix/Mozibix-Anonymous_Voice_Notes_Backend" target="_blank">🔗 View on GitHub</a></p>
+  `);
+});
+
 // Health check
 app.get("/api/health", (req, res) => {
   res.json({
